@@ -1,12 +1,8 @@
-import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 import org.apache.jena.query.QueryExecution;
 import org.apache.jena.query.QuerySolution;
@@ -14,12 +10,11 @@ import org.apache.jena.query.ResultSet;
 import org.apache.jena.rdf.model.Model;
 import org.apache.jena.rdf.model.ModelFactory;
 import org.apache.jena.rdf.model.Resource;
-import org.apache.jena.sparql.expr.ExprEvalException;
 import org.apache.jena.vocabulary.OWL;
-import org.apache.jena.vocabulary.SKOS;
 import org.geotools.geometry.jts.JTSFactoryFinder;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.TopologyException;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
 
@@ -138,36 +133,46 @@ public class Start {
 	}
 	
 	
-	public static void findEquivalentInstances(AegeanClass acl, Model model, int threshold) {
-		ArrayList<AegeanInstance> instances = acl.getInstances();
+	public static void findEquivalentInstances(ArrayList<AegeanInstance> aegeanInstances, ArrayList<CandidateInstance>candidateInstances,
+		Model model, int distanceThreshold) {
 		try {
-	        for(AegeanInstance aegeanInstance: instances) {
-	        	ArrayList<CandidateInstance> candidates = aegeanInstance.getCandidates();
+	        for(AegeanInstance aegeanInstance: aegeanInstances) {
 	        	// Calculate the Levenshtein Similarity for each one of the candidate instances
-	        	for(CandidateInstance candidateInstance : candidates) {
+	        	for(CandidateInstance candidateInstance : candidateInstances) {
+//	        		System.out.println(aegeanInstance.getLabel() + " " + candidateInstance.getLabel());
 	        		if(aegeanInstance.getLabel() != null && candidateInstance.getLabel() != null)
 	        			candidateInstance.setSimilarity(LevenshteinSimilarity(aegeanInstance.getLabel(), candidateInstance.getLabel()));
 	        		else
 	        			candidateInstance.setSimilarity(LevenshteinSimilarity(aegeanInstance.getName(), candidateInstance.getName()));
+	        		
 	        	}
 	        	
 	        	// Find the instance from all the candidate instances with the greatest score of similarity
-	        	CandidateInstance bestMachingInstance = aegeanInstance.findBestInstance();
-	        	if(bestMachingInstance == null) // A similar instance was not found
-	        		continue;
-	        	
+	    		CandidateInstance bestMachingInstance = candidateInstances.get(0);
+	    		double maxSimilarity = candidateInstances.get(0).getSimilarity();
+	    		for(CandidateInstance candidate : candidateInstances) {
+	    			if(candidate.getSimilarity() > maxSimilarity) {
+	    				maxSimilarity = candidate.getSimilarity();
+	    				bestMachingInstance = candidate;
+	    			}
+	    		}
+
 	        	// ΕΛΕΓΧΟΣ ΜΕ ΣΥΝΤΕΤΑΓΜΕΝΕΣ
-	        	double distance = 0;
-	        	double intersection = 0;
-	        	if(aegeanInstance.getType().equals("POINT") && bestMachingInstance.getType().equals("POINT")) 
-	        		distance = geometyDistance(aegeanInstance, bestMachingInstance);  		
-	        	else { 
-	        		distance = geometyDistance(aegeanInstance, bestMachingInstance); 
-	        		intersection = geometyIntersection(aegeanInstance, bestMachingInstance);
-	        	}
-	        	if(distance > threshold && intersection == 0)
-	        		continue;
-	
+	    		if(bestMachingInstance.getWkt() != null) {
+	    			double distance = 0;
+		        	double intersection = 0;
+		        	if(aegeanInstance.getType().equals("POINT") && bestMachingInstance.getType().equals("POINT")) 
+		        		distance = geometyDistance(aegeanInstance, bestMachingInstance);  		
+		        	else { 
+		        		distance = geometyDistance(aegeanInstance, bestMachingInstance); 
+		        		intersection = geometyIntersection(aegeanInstance, bestMachingInstance);
+		        	}
+		        	if(distance > distanceThreshold && intersection == 0)
+		        		continue;
+	    		}
+	    		if(bestMachingInstance.getWkt() == null && bestMachingInstance.getSimilarity() < 0.9)
+	    			continue;
+	        	
 	        	// For each instance we set as sameAs instance, the candidate instance that has similarity greater than 0.90
 	        	aegeanInstance.setSameAs(bestMachingInstance.getURI());
 	        	
@@ -176,14 +181,17 @@ public class Start {
 	            Resource equivalentResource = model.createResource(bestMachingInstance.getURI());
 	            newResource.addProperty(OWL.sameAs, equivalentResource);
 	        }
-       }catch(NullPointerException ex) {
+       }catch(TopologyException ex) {
+    	   System.out.println("An error occured " + ex.getMessage());
+       }
+		catch(NullPointerException ex) {
     	   System.out.println("An error occured " + ex.getMessage());
        }
 	}
 	
 	public static void exportToTTL(Model model, String format, String filename) {
 		// Export the .ttl file in N-Triples format "N-Triples"
-        model.write(System.out, format);
+//        model.write(System.out, format);
         try {
 	    	FileWriter writer = new FileWriter(filename);
 	    	model.write(writer, format);
@@ -255,7 +263,6 @@ public class Start {
 			if(qs.getLiteral("lbl") != null) {
 				lbl = qs.getLiteral("lbl").toString();
 			}
-
 			aegeanCls.addInstance(new AegeanInstance(qs.getResource("instance").getURI(),
 					lbl, "Aegean", qs.getLiteral("wkt").toString()));
 		}	
@@ -322,16 +329,12 @@ public class Start {
 	}
 	
 	
-	public static void sparqlGetDBpediaInstances(AegeanClass aClass, AegeanInstance instance) {
+	public static ArrayList<CandidateInstance> sparqlGetDBpediaInstances(AegeanClass aClass) {
 		String endpoint = "http://dbpedia.org/sparql";
-		try {
-			String classLabel = aClass.getLabel(); 
-			String instanceLabel = instance.getLabel();
-//			String[] strParts = instance.getLabel().split("@");
-//			String instanceLabel = strParts[0];
-//			String instanceLanguage = strParts[1];
-			
-//			System.out.println("Κλάση: " + classLabel + " Instance: " + instanceLabel);
+		
+		ArrayList<CandidateInstance> candidateInstances = new ArrayList<>();
+		
+		//try {
 
 			String sparqlGetClassQuery = "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
 					+ "PREFIX owl: <http://www.w3.org/2002/07/owl#> "
@@ -339,17 +342,17 @@ public class Start {
 					+ "PREFIX dbo: <http://dbpedia.org/ontology/> "
 					+ "PREFIX dbr: <http://dbpedia.org/resource/> "
 					+ "PREFIX geo: <http://www.w3.org/2003/01/geo/wgs84_pos#> "
-		       		+ "SELECT distinct ?uri ?lbl ?name ?geometry "
+		       		+ "SELECT distinct ?uri ?label ?name ?geometry "
 		       		+ "WHERE { "
 		       		+ "    ?uri a ?cl ; "
-		       		+ "         rdfs:label ?lbl ; "
+		       		+ "         rdfs:label ?label ; "
 		       		+ "         dbo:country dbr:Greece . "
 		       		+ "         OPTIONAL { ?uri dbp:nameLocal ?name } . "
-		       		+ "         OPTIONAL { ?uri  geo:geometry ?geometry}  "
-		       		+ " FILTER regex(?lbl, \"" + instanceLabel + "*\", 'i') "
-		       		+ " FILTER regex(?cl, \"" + classLabel + "\", 'i') "
+		       		+ "         OPTIONAL { ?uri  geo:geometry ?geometry}  "		       		
+		       		+ " FILTER regex(?cl, \"" + aClass.getName() + "\", 'i') "
+		       		+ " FILTER(LANG(?label) = 'en' || LANG(?label) = 'el') "
 		       		+ " } ";
-
+			
 		    QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlGetClassQuery).build();
 			ResultSet results = qexec.execSelect();
 			while (results.hasNext()) {
@@ -363,27 +366,24 @@ public class Start {
 		           
 		           String label  = null;
 					
-		           if(qs.getLiteral("lbl") != null) {
-						label = qs.getLiteral("lbl").toString();
+		           if(qs.getLiteral("label") != null) {
+						label = qs.getLiteral("label").toString();
 					}
-				   
-		           instance.addCandidateInstance(new CandidateInstance(qs.getResource("uri").getURI(), 
-		        		   label, "DBpedia", wkt));
-		           
-//		           System.out.println(qs.getResource("uri").getURI());
-		           qexec.close();
+		           candidateInstances.add(new CandidateInstance(qs.getResource("uri").getURI(), label, "DBpedia", wkt));
 			}
-//			System.out.println("-----------------------------");
-		}catch(NullPointerException ex) {
-			System.out.println("1Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-		}catch(PatternSyntaxException ex) {
-			System.out.println("2Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-		}
-		catch(ExprEvalException ex) {
-			System.out.println("3Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-		}catch(Exception ex) {
-			System.out.println("4Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-		}
+			
+//		}catch(NullPointerException ex) {
+//			System.out.println("1Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
+//		}catch(PatternSyntaxException ex) {
+//			System.out.println("2Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
+//		}
+//		catch(ExprEvalException ex) {
+//			System.out.println("3Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
+//		}catch(Exception ex) {
+//			System.out.println("4Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
+//		}
+		qexec.close();
+		return candidateInstances;
 	}
 	
 	
@@ -455,6 +455,8 @@ public class Start {
 //		test(s1, s2);
 		ArrayList <AegeanClass> aegeanClasses = new ArrayList<AegeanClass>();
 		ArrayList <AegeanInstance> aegeanInstances = new ArrayList<AegeanInstance>();
+		ArrayList <CandidateInstance> candidateInstances = new ArrayList<CandidateInstance>();
+		
 		int distanceThreshold = 5000; // threshols in meters
 		
 		// Create an empty Model
@@ -485,27 +487,27 @@ public class Start {
          * */
         
         try {
-        	int counter = 1;
         	// For each class of the Aegean SPARQL endpoint the relevant instances are fetched
         	for(AegeanClass acl: aegeanClasses) {
-        		if(acl.getSameAsClass() != null) {
+//        		if(acl.getSameAsClass() != null) {
             		sparqlInstanceProperties(acl);
             		if(acl.getInstancesWithLabels() == true) {
-            			System.out.println(counter + " Instances of class " + acl.getName() + " are fetching...");
-            			counter += 1;
+            			System.out.println("Instances of class " + acl.getURI() + " are fetching...");
             			sparqlGetClassInstances(acl);
                 		aegeanInstances = acl.getInstances();
-                		System.out.println("Instances for class " + acl.getURI());
-                		for(AegeanInstance instance : aegeanInstances) {
-                			sparqlGetDBpediaInstances(acl, instance);
+                		System.out.println("For class " + acl.getURI() + " " + aegeanInstances.size() + " are fetched from Aegean Endpoint!");
+                		candidateInstances = sparqlGetDBpediaInstances(acl);
+                		System.out.println("For class " + acl.getURI() + " " + candidateInstances.size() + " are fetched from DBpedia Endpoint!");
+                		if(candidateInstances.size()>0) {
+	                		System.out.println("Equivalent instances of class " + acl.getName() + " are searched..");
+	                    	findEquivalentInstances(aegeanInstances, candidateInstances, instanceModel, distanceThreshold);
+                		}else {
+                			System.out.println("No instances are fetched from DBpedia for class " + acl.getURI());
                 		}
-            			//System.out.println("The instances of class " + acl.getName() + " have label property");
-                		System.out.println("Equivalent instances of class " + acl.getName() + " are searched..");
-                    	findEquivalentInstances(acl, instanceModel, distanceThreshold);
-            		}
-        		}
+                	}
+//        		}
 
-        		Thread.sleep(15000);
+        		Thread.sleep(10000);
         	}
         }
         catch (Exception ex) {
