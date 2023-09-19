@@ -17,6 +17,13 @@ import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.TopologyException;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
+import org.locationtech.jts.util.AssertionFailedException;
+
+import edu.cmu.lti.lexical_db.ILexicalDatabase;
+import edu.cmu.lti.lexical_db.NictWordNet;
+import edu.cmu.lti.ws4j.WS4J;
+import edu.cmu.lti.ws4j.util.WS4JConfiguration;
+
 
 public class Start {
 	
@@ -99,29 +106,78 @@ public class Start {
 //        }
 //	}
 	
+	// ΕΔΩ ΘΑ ΜΠΕΙ Η ΣΥΝΑΡΤΗΣΗ ΠΟΥ ΘΑ ΒΡΙΣΚΕΙ ΤΟ SEMANTIC SIMILARITY
+	// ΤΟ ΜΕΓΑΛΥΤΕΡΟ MATCH ΚΕΡΔΙΖΕΙ
+	public static double wuPalSimilarity(String word1, String word2) {
+		ILexicalDatabase db = new NictWordNet();
 
-	public static void findEquivalentClasses(ArrayList<AegeanClass> aegeanClasses, Model model) {
+        // Set up WS4J configuration
+        WS4JConfiguration.getInstance().setMFS(true);
+
+        // Calculate the similarity
+        double wuPalmerSimilarity = WS4J.runWUP(word1, word2);
+//        System.out.println("Wu-Palmer Similarity between " + word1 + " and " + word2 + ": " + wuPalmerSimilarity);
+        return wuPalmerSimilarity;
+	}
+	
+	
+	public static int isSubstring(String aegeanClassString, String otherClassString){
+        // Split the camelCaseString (Class name) into separate words
+        String[] words = aegeanClassString.split("(?=[A-Z])");
+
+        // Check if at least one word of the Aegean class is a substring of the other class
+        int index = 0;
+        while(index < words.length) {
+        	if(otherClassString.indexOf(words[index]) != -1)
+        		return 1;
+        	index += 1;
+        }
+
+        // None of the separate words in the Aegean class is a subset of the other class
+        return -1;
+    }
+	
+	public static String tranformToSentence(String camelCaseString) {
+		// Split the camelCaseString into separate words
+        String[] words = camelCaseString.split("(?=[A-Z])");
+
+        // Join the words into a sentence
+        String sentence = String.join(" ", words);
+        return sentence;
+	}
+	
+	
+	public static void findEquivalentClasses(ArrayList<AegeanClass> aegeanClasses, ArrayList<CandidateClass> candidateClasses, Model model, double threshold) {
         int matches = 0;
+        double similarity = -1;
+        CandidateClass bestMatchClass = null;
         for(AegeanClass acl: aegeanClasses) {
-        	ArrayList<String> candidates = acl.getCandidates();
+        	
         	// Calculate the Levenshtein Similarity for each one of the candidate classes
-        	for(String candidate : candidates) {
-        		String candidateName = acl.extractName(candidate);
-        		acl.addSimilarity(LevenshteinSimilarity(acl.getName(), candidateName));
+        	double maxSimilarity = -1;
+        	int maxIndex = -1;
+        	for(int i=0; i<candidateClasses.size(); i++) {
+        		if(isSubstring(acl.getName(), candidateClasses.get(i).getName()) != -1) {
+        			String aegeanClassSentence = tranformToSentence(acl.getName());
+        			String candidateClassSentence = tranformToSentence(candidateClasses.get(i).getName());
+//	        		similarity = wuPalSimilarity(aegeanClassSentence, candidateClassSentence);
+	        		similarity = LevenshteinSimilarity(acl.getName(), candidateClasses.get(i).getName());
+//	        		System.out.println(aegeanClassSentence + " " + candidateClassSentence + " " + similarity);
+	        		if(similarity > maxSimilarity){
+	        			bestMatchClass = candidateClasses.get(i);
+	        			maxSimilarity = similarity;
+	        			maxIndex = i;
+	        		}
+        		}
         	}
         	
-        	// Find the class from all the candidate classes with the greatest score of similarity
-        	ArrayList<Double> similarities = acl.getSimilarities();
-        	int maxIndex = acl.findMaxSimilarity(); 
-        	if(maxIndex == -1) // A similar class was not found
-        		continue;
         	
         	// For each class we set as sameAs class, the candidate class that has similarity greater than 0.90
-        	if(similarities.get(maxIndex) >= 0.90) {
-        		acl.setSameAsClass(candidates.get(maxIndex));
-        		// System.out.println(acl.getName() + " sameAs " + candidates.get(maxIndex) + " with similarity equals to " + similarities.get(maxIndex));
+        	if(maxSimilarity >= threshold) {
+        		acl.setSameAsClass(bestMatchClass.getURI());
+//        		System.out.println(acl.getName() + " sameAs " + bestMatchClass.getName());
         		matches +=1;
-        		
+//        		candidateClasses.remove(maxIndex);
         		// Create the resources
         		Resource newResource = model.createResource(acl.getURI());
             	Resource equivalentResource = model.createResource(acl.getSameAsClass());
@@ -133,8 +189,9 @@ public class Start {
 	}
 	
 	
-	public static void findEquivalentInstances(ArrayList<AegeanInstance> aegeanInstances, ArrayList<CandidateInstance>candidateInstances,
-		Model model, int distanceThreshold) {
+	public static int findEquivalentInstances(ArrayList<AegeanInstance> aegeanInstances, ArrayList<CandidateInstance>candidateInstances,
+		Model model, int distanceThreshold, double similarityThreshold) {
+		int counter = 0;
 		try {
 	        for(AegeanInstance aegeanInstance: aegeanInstances) {
 	        	// Calculate the Levenshtein Similarity for each one of the candidate instances
@@ -144,7 +201,7 @@ public class Start {
 	        			candidateInstance.setSimilarity(LevenshteinSimilarity(aegeanInstance.getLabel(), candidateInstance.getLabel()));
 	        		else
 	        			candidateInstance.setSimilarity(LevenshteinSimilarity(aegeanInstance.getName(), candidateInstance.getName()));
-	        		
+	    
 	        	}
 	        	
 	        	// Find the instance from all the candidate instances with the greatest score of similarity
@@ -162,15 +219,17 @@ public class Start {
 	    			double distance = 0;
 		        	double intersection = 0;
 		        	if(aegeanInstance.getType().equals("POINT") && bestMachingInstance.getType().equals("POINT")) 
-		        		distance = geometyDistance(aegeanInstance, bestMachingInstance);  		
+		        		distance = geometryDistance(aegeanInstance, bestMachingInstance);  		
 		        	else { 
-		        		distance = geometyDistance(aegeanInstance, bestMachingInstance); 
+		        		distance = geometryDistance(aegeanInstance, bestMachingInstance); 
 		        		intersection = geometyIntersection(aegeanInstance, bestMachingInstance);
 		        	}
-		        	if(distance > distanceThreshold && intersection == 0)
+		        	if((distance > distanceThreshold && intersection == 0))
 		        		continue;
+		        	if(intersection == -1) continue;
 	    		}
-	    		if(bestMachingInstance.getWkt() == null && bestMachingInstance.getSimilarity() < 0.9)
+ 
+	    		if(bestMachingInstance.getWkt() == null && bestMachingInstance.getSimilarity() < similarityThreshold)
 	    			continue;
 	        	
 	        	// For each instance we set as sameAs instance, the candidate instance that has similarity greater than 0.90
@@ -180,13 +239,19 @@ public class Start {
 	        	Resource newResource = model.createResource(aegeanInstance.getURI());
 	            Resource equivalentResource = model.createResource(bestMachingInstance.getURI());
 	            newResource.addProperty(OWL.sameAs, equivalentResource);
+	            counter += 1;
 	        }
        }catch(TopologyException ex) {
-    	   System.out.println("An error occured " + ex.getMessage());
+    	   System.out.println("An error occured (Topology Exception) " + ex.getMessage());
        }
 		catch(NullPointerException ex) {
-    	   System.out.println("An error occured " + ex.getMessage());
+    	   System.out.println("An error occured (NullPointerException)" + ex.getMessage());
        }
+		catch(AssertionFailedException ex) {
+	    	   System.out.println("An error occured (AssertionFailedException)" + ex.getMessage());
+	    }
+		
+		return counter;
 	}
 	
 	public static void exportToTTL(Model model, String format, String filename) {
@@ -217,6 +282,7 @@ public class Start {
 	       		+ "} ";
 
 	    QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlClassesQuery).build();
+
 		ResultSet results = qexec.execSelect();
 		while (results.hasNext()) {
 	           QuerySolution qs = results.nextSolution();
@@ -227,7 +293,7 @@ public class Start {
 
 		}
 		
-		System.out.println(totalClasses.size() + " classes were fetched in total");
+		
 		qexec.close();
 		
 		return totalClasses;
@@ -254,6 +320,7 @@ public class Start {
 			
 
 		QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlClassesQuery).build();
+		
 		ResultSet results = qexec.execSelect();
 		
 		while (results.hasNext()) {
@@ -286,6 +353,7 @@ public class Start {
 			
 
 		QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlClassesQuery).build();
+
 		ResultSet results = qexec.execSelect();
 		
 		while (results.hasNext()) {
@@ -312,12 +380,13 @@ public class Start {
 					+ "PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> "
 		       		+ "SELECT distinct ?class "
 		       		+ "WHERE { "
-		       		+ "    ?class a owl:Class ; "
+		       		+ "    ?class a owl:Class; "
 		       		+ "         rdfs:label ?lbl . "
 		       		+ " FILTER regex(?lbl, \"" + part + "\", \"i\") "
-		       		+ "} ";
+		       		+ "} ";		
 	
 		    QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlGetClassQuery).build();
+
 			ResultSet results = qexec.execSelect();
 	
 			while (results.hasNext()) {
@@ -328,10 +397,76 @@ public class Start {
 		}
 	}
 	
+//	public static int sparqlCountDBpediaClasses() {
+//		String endpoint = "http://dbpedia.org/sparql";
+//		
+//		String sparqlGetClassQuery = "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
+//			+ "PREFIX owl: <http://www.w3.org/2002/07/owl#> "
+//			+ "PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> "
+//		    + "SELECT COUNT(distinct ?class) WHERE {?s a ?class} ";		
+//		//select  count distinct ?class where {?s a ?class} 
+//		    QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlGetClassQuery).build();
+//
+//			ResultSet results = qexec.execSelect();
+//			int counter = -1;
+//			if (results.hasNext()) {
+//	            QuerySolution qs = results.nextSolution();
+////	            System.out.println(qs.getLiteral("class").getString());
+//	            counter = Integer.parseInt(qs.getLiteral("class").getString());
+//	       
+//	        }
+//			qexec.close();
+//			return counter;
+//			
+////			+ "SELECT distinct (COUNT(?subject) as ?counter) " 
+////		    + "WHERE { "
+////		    + "    ?subject a owl:Class; "
+////		    + "         rdfs:label ?label . "
+////		    + " FILTER(LANG(?label) = 'en' || LANG(?label) = 'el') "
+////		    + "}";
+//	}
 	
-	public static ArrayList<CandidateInstance> sparqlGetDBpediaInstances(AegeanClass aClass) {
+	
+	public static ArrayList<CandidateClass> sparqlGetDBpediaClasses(int limit, int offset) {
 		String endpoint = "http://dbpedia.org/sparql";
 		
+		ArrayList<CandidateClass> candidates = new ArrayList<>();
+//		System.out.println("Limit = " + limit + " OFFSET = " + offset);
+		String sparqlGetClassQuery = "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
+			+ "PREFIX owl: <http://www.w3.org/2002/07/owl#> "
+			+ "PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> "
+			+ "PREFIX dbo: <http://dbpedia.org/ontology/> "
+			+ "PREFIX dbr: <http://dbpedia.org/resource/> "
+		    + "SELECT distinct ?class "
+		    + "WHERE { "
+		    + "    ?s a ?class . "
+		    + "} LIMIT " + limit + " OFFSET " + offset;		
+	
+		    QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlGetClassQuery).build();
+
+			ResultSet results = qexec.execSelect();
+	
+			while (results.hasNext()) {
+				QuerySolution qs = results.nextSolution();
+			    String label  = null;
+						
+//				if(qs.getLiteral("label") != null) {
+//					label = qs.getLiteral("label").toString();
+//				}
+			    candidates.add(new CandidateClass(qs.getResource("class").getURI().toString(), label));	           
+			}
+	
+			qexec.close();
+			return candidates;
+	}
+//	 + "WHERE { "
+//	    + "    ?subject a owl:Class; "
+//	    + "         rdfs:label ?label . "
+//	    + " FILTER(LANG(?label) = 'en' || LANG(?label) = 'el') "
+	
+	public static ArrayList<CandidateInstance> sparqlGetDBpediaInstances(AegeanClass aClass, int limit, int offset) {
+		String endpoint = "http://dbpedia.org/sparql";
+		System.out.println("<" + aClass.getSameAsClass()+ ">");
 		ArrayList<CandidateInstance> candidateInstances = new ArrayList<>();
 		
 		//try {
@@ -342,18 +477,40 @@ public class Start {
 					+ "PREFIX dbo: <http://dbpedia.org/ontology/> "
 					+ "PREFIX dbr: <http://dbpedia.org/resource/> "
 					+ "PREFIX geo: <http://www.w3.org/2003/01/geo/wgs84_pos#> "
-		       		+ "SELECT distinct ?uri ?label ?name ?geometry "
+		       		+ "SELECT distinct ?uri ?label ?geometry "
 		       		+ "WHERE { "
-		       		+ "    ?uri a ?cl ; "
-		       		+ "         rdfs:label ?label ; "
-		       		+ "         dbo:country dbr:Greece . "
-		       		+ "         OPTIONAL { ?uri dbp:nameLocal ?name } . "
-		       		+ "         OPTIONAL { ?uri  geo:geometry ?geometry}  "		       		
-		       		+ " FILTER regex(?cl, \"" + aClass.getName() + "\", 'i') "
+		       		+ "    ?uri a <" + aClass.getSameAsClass()+ "> ; "
+		       		+ "         rdfs:label ?label ;"
+		       		+ "         geo:lat ?lat ;"
+		       		+ "         geo:long ?long ."
+		       		+ " OPTIONAL { ?uri geo:geometry ?geometry}  "		       		
 		       		+ " FILTER(LANG(?label) = 'en' || LANG(?label) = 'el') "
-		       		+ " } ";
+		       		+ " FILTER (?lat > 33 && ?lat < 42) "
+		       		+ " FILTER (?long > 18 && ?long < 30) "
+		       		+ " } LIMIT " + limit + " OFFSET " + offset;
+			
+//			+ "SELECT distinct ?uri ?label ?geometry "
+//       		+ "WHERE { "
+//       		+ "    ?uri a <" + aClass.getSameAsClass()+ "> ; "
+//       		+ "         rdfs:label ?label . "
+//       		+ "    OPTIONAL { ?uri dbo:country dbr:Greece } "
+//       		+ "    OPTIONAL { ?uri geo:geometry ?geometry}  "		       		
+//       		+ " FILTER(LANG(?label) = 'en' || LANG(?label) = 'el') "
+//       		+ " } ";
+			
+//			+ "SELECT distinct ?uri ?label ?name ?geometry "
+//       		+ "WHERE { "
+//       		+ "    ?uri a <http://schema.org/Airport> ; "
+//       		+ "         rdfs:label ?label ; "
+//       		+ "         dbo:country dbr:Greece . "
+//       		+ "         OPTIONAL { ?uri dbp:nameLocal ?name } . "
+//       		+ "         OPTIONAL { ?uri  geo:geometry ?geometry}  "		       		
+//       		+ " FILTER regex(?cl, \"" + aClass.getName() + "\", 'i') "
+//       		+ " FILTER(LANG(?label) = 'en' || LANG(?label) = 'el') "
+//       		+ " } ";
 			
 		    QueryExecution qexec = QueryExecution.service(endpoint).query(sparqlGetClassQuery).build();
+
 			ResultSet results = qexec.execSelect();
 			while (results.hasNext()) {
 		           QuerySolution qs = results.nextSolution();
@@ -372,22 +529,12 @@ public class Start {
 		           candidateInstances.add(new CandidateInstance(qs.getResource("uri").getURI(), label, "DBpedia", wkt));
 			}
 			
-//		}catch(NullPointerException ex) {
-//			System.out.println("1Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-//		}catch(PatternSyntaxException ex) {
-//			System.out.println("2Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-//		}
-//		catch(ExprEvalException ex) {
-//			System.out.println("3Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-//		}catch(Exception ex) {
-//			System.out.println("4Unable to fetch data from DBpedia for instance " + instance.getURI() + "because of an exception!");
-//		}
 		qexec.close();
 		return candidateInstances;
 	}
 	
 	
-	public static double geometyDistance(AegeanInstance aegeanInstance, CandidateInstance candidateInstance) {
+	public static double geometryDistance(AegeanInstance aegeanInstance, CandidateInstance candidateInstance) {
 		GeometryFactory geometryFactory = JTSFactoryFinder.getGeometryFactory();
 	    WKTReader reader = new WKTReader(geometryFactory);
 	    Geometry geom1=null;
@@ -400,7 +547,7 @@ public class Start {
 				return (geom1.distance(geom2) * 111) / 0.001;
 	
 			} catch (ParseException e) {
-				e.printStackTrace();
+				System.out.println("Unable to calculate the geometry distance for the instance " + candidateInstance.getLabel());
 			}
 	    }
 	    
@@ -412,7 +559,7 @@ public class Start {
 	    WKTReader reader = new WKTReader(geometryFactory);
 	    Geometry geom1=null;
 		Geometry geom2=null;
-	    if(aegeanInstance.getType() != null && candidateInstance.getType() != null){
+	    if(aegeanInstance.getWkt() != null && candidateInstance.getWkt() != null){
 	    	try {
 				geom1 =  reader.read(aegeanInstance.getWkt());
 				geom2 =  reader.read(candidateInstance.getWkt());
@@ -421,7 +568,8 @@ public class Start {
 					return 1; // The two instances intersects 
 				return 0;	// The two instances does not intersect 
 			} catch (ParseException e) {
-				e.printStackTrace();
+				System.out.println("Unable to calculate the geometry distance for the instance " + candidateInstance.getLabel());
+				return -1;
 			}
 	    }
 	    // We can not check if there is an intersection between instances
@@ -450,36 +598,48 @@ public class Start {
 	}
 
 	public static void main(String[] args) throws IOException {
-//        String s1 = "POLYGON ((19.521269769706763 39.778610674978324, 19.533293574203686 39.766566888942734, 19.53641063216305 39.75916776962544, 19.52311995606503 39.758952067491656, 19.507983093368797 39.783562212133596, 19.521269769706763 39.778610674978324))";
-//		String s2 = "POINT(19.516666412354 39.766666412354)";
-//		test(s1, s2);
 		ArrayList <AegeanClass> aegeanClasses = new ArrayList<AegeanClass>();
+		ArrayList <CandidateClass> candidateClasses = new ArrayList<>();
 		ArrayList <AegeanInstance> aegeanInstances = new ArrayList<AegeanInstance>();
-		ArrayList <CandidateInstance> candidateInstances = new ArrayList<CandidateInstance>();
+		ArrayList <CandidateInstance> candidateInstances = new ArrayList<>();
 		
-		int distanceThreshold = 5000; // threshols in meters
-		
+		int distanceThreshold = 30000; // threshold in meters
+		double similarityThreshold = 0.7;
+		double classSimilarityThreshold = 0.40;
+		int counter = 0;
 		// Create an empty Model
         Model model = ModelFactory.createDefaultModel();
-        Model instanceModel = ModelFactory.createDefaultModel();
+        
         
         /*
          * For each class fetched by the Aegean SPARQL endpoint 
          * find candidate classes from dbpedia SPARQL endpoint that can be assigned as sameAs classes.
          * */
-		
-        try {
-        	aegeanClasses = sparqlGetAllClasses();
+		int numberOfDBclasses;
+		int limit = 10000;
+		int offset = 0;
+        
+   	 	try {
+	   	 	System.out.println("Please wait. Data from Aegean University endpoint are fetched..");
+	   	 	aegeanClasses = sparqlGetAllClasses();
+	   	 	System.out.println(aegeanClasses.size() + " classes were fetched from Aegean University.");
+   	 		
+        	System.out.println("Please wait. Data from DBpedia endpoint are fetched..");
+        	while(true) {
+        		ArrayList<CandidateClass> list = sparqlGetDBpediaClasses(limit, offset);
+        		candidateClasses.addAll(list);
+            	offset += limit;
+            	if(list.size() < limit) break;
+            	
+        	}
+        	System.out.println(candidateClasses.size() + " classes where fetched from DBpedia.");   
         	
-        	for(AegeanClass acl : aegeanClasses) {
-        		sparqlGetEquivalentClasses(acl);
-        	}      	
-        }
-        catch (Exception ex) {
+        }catch (Exception ex) {
             System.err.println(ex);
         }
-        
-        findEquivalentClasses(aegeanClasses, model);
+        System.out.println("Please wait. The matching procedure is in progress..");
+        findEquivalentClasses(aegeanClasses, candidateClasses, model, classSimilarityThreshold);
+        exportToTTL(model, "N-Triples", "classResults.ttl");
         
         /*
          * For each instance fetched by the Aegean SPARQL endpoint 
@@ -489,34 +649,36 @@ public class Start {
         try {
         	// For each class of the Aegean SPARQL endpoint the relevant instances are fetched
         	for(AegeanClass acl: aegeanClasses) {
-//        		if(acl.getSameAsClass() != null) {
-            		sparqlInstanceProperties(acl);
-            		if(acl.getInstancesWithLabels() == true) {
-            			System.out.println("Instances of class " + acl.getURI() + " are fetching...");
-            			sparqlGetClassInstances(acl);
-                		aegeanInstances = acl.getInstances();
-                		System.out.println("For class " + acl.getURI() + " " + aegeanInstances.size() + " are fetched from Aegean Endpoint!");
-                		candidateInstances = sparqlGetDBpediaInstances(acl);
-                		System.out.println("For class " + acl.getURI() + " " + candidateInstances.size() + " are fetched from DBpedia Endpoint!");
-                		if(candidateInstances.size()>0) {
-	                		System.out.println("Equivalent instances of class " + acl.getName() + " are searched..");
-	                    	findEquivalentInstances(aegeanInstances, candidateInstances, instanceModel, distanceThreshold);
-                		}else {
-                			System.out.println("No instances are fetched from DBpedia for class " + acl.getURI());
-                		}
+        		if(acl.getSameAsClass() != null) {
+        			Model instanceModel = ModelFactory.createDefaultModel();
+//            		System.out.println("Instances of class " + acl.getURI() + " are fetched...");
+            		sparqlGetClassInstances(acl);
+            		aegeanInstances = acl.getInstances();
+            		
+            		limit = 10000;
+            		offset = 0;
+            		// καθάρισμα του ArrayList 
+            		candidateInstances.clear();
+            		ArrayList<CandidateInstance> instanceList;
+            		while(true) {
+                		instanceList = sparqlGetDBpediaInstances(acl, limit, offset);
+                		candidateInstances.addAll(instanceList);
+                    	offset += limit;
+                    	if(instanceList.size() < limit) break;
+                    	instanceList.clear();
                 	}
-//        		}
-
-        		Thread.sleep(10000);
+//                	candidateInstances = sparqlGetDBpediaInstances(acl);
+                	if(candidateInstances.size()>0) {
+	                    counter += findEquivalentInstances(aegeanInstances, candidateInstances, instanceModel, distanceThreshold, similarityThreshold);
+                	}
+                	if(instanceModel.size() > 0)
+                		exportToTTL(instanceModel, "N-Triples", acl.getName() + "MatchedInstances.ttl");
+        		}
         	}
+        	System.out.println(counter + " instances were matched");
         }
         catch (Exception ex) {
             System.err.println(ex);
-        }
-        
-        
-        exportToTTL(model, "N-Triples", "classResults.ttl");
-        exportToTTL(instanceModel, "N-Triples", "instanceResults.ttl");
+        }        
     }	       
-
 }
