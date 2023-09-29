@@ -192,48 +192,44 @@ public class Start {
 	public static int findEquivalentInstances(ArrayList<AegeanInstance> aegeanInstances, ArrayList<CandidateInstance>candidateInstances,
 		Model model, int distanceThreshold, double similarityThreshold) {
 		int counter = 0;
+		double distance;
+		double intersection;
+		double similarity = 0;
 		try {
 	        for(AegeanInstance aegeanInstance: aegeanInstances) {
-	        	// Calculate the Levenshtein Similarity for each one of the candidate instances
+	        	double maxSimilarity = -1;
+	        	CandidateInstance bestMachingInstance = null;
 	        	for(CandidateInstance candidateInstance : candidateInstances) {
-//	        		System.out.println(aegeanInstance.getLabel() + " " + candidateInstance.getLabel());
-	        		if(aegeanInstance.getLabel() != null && candidateInstance.getLabel() != null)
-	        			candidateInstance.setSimilarity(LevenshteinSimilarity(aegeanInstance.getLabel(), candidateInstance.getLabel()));
-	        		else
-	        			candidateInstance.setSimilarity(LevenshteinSimilarity(aegeanInstance.getName(), candidateInstance.getName()));
-	    
-	        	}
-	        	
-	        	// Find the instance from all the candidate instances with the greatest score of similarity
-	    		CandidateInstance bestMachingInstance = candidateInstances.get(0);
-	    		double maxSimilarity = candidateInstances.get(0).getSimilarity();
-	    		for(CandidateInstance candidate : candidateInstances) {
-	    			if(candidate.getSimilarity() > maxSimilarity) {
-	    				maxSimilarity = candidate.getSimilarity();
-	    				bestMachingInstance = candidate;
-	    			}
-	    		}
-
-	        	// ΕΛΕΓΧΟΣ ΜΕ ΣΥΝΤΕΤΑΓΜΕΝΕΣ
-	    		if(bestMachingInstance.getWkt() != null) {
-	    			double distance = 0;
-		        	double intersection = 0;
-		        	if(aegeanInstance.getType().equals("POINT") && bestMachingInstance.getType().equals("POINT")) 
-		        		distance = geometryDistance(aegeanInstance, bestMachingInstance);  		
+	        		distance = 0;
+		        	intersection = 0;
+		        	if(aegeanInstance.getType().equals("POINT") && candidateInstance.getType().equals("POINT")) 
+		        		distance = geometryDistance(aegeanInstance, candidateInstance);  		
 		        	else { 
-		        		distance = geometryDistance(aegeanInstance, bestMachingInstance); 
-		        		intersection = geometyIntersection(aegeanInstance, bestMachingInstance);
+		        		distance = geometryDistance(aegeanInstance, candidateInstance); 
+		        		intersection = geometyIntersection(aegeanInstance, candidateInstance);
 		        	}
-		        	if((distance > distanceThreshold && intersection == 0))
-		        		continue;
-		        	if(intersection == -1) continue;
-	    		}
- 
-	    		if(bestMachingInstance.getWkt() == null && bestMachingInstance.getSimilarity() < similarityThreshold)
+		        	if((distance <= distanceThreshold || intersection == 1 )) {
+		        		if(aegeanInstance.getLabel() != null && candidateInstance.getLabel() != null)
+		        			similarity = LevenshteinSimilarity(aegeanInstance.getLabel(), candidateInstance.getLabel());
+		        		else if(aegeanInstance.getName() != null && candidateInstance.getName() != null)
+		        			similarity = LevenshteinSimilarity(aegeanInstance.getName(), candidateInstance.getName());
+		        		else if(aegeanInstance.getLabel() != null && candidateInstance.getLabel() == null)
+		        			similarity =LevenshteinSimilarity(aegeanInstance.getLabel(), candidateInstance.getName());
+		        		else if(aegeanInstance.getLabel() == null && candidateInstance.getLabel() != null)
+		        			similarity = LevenshteinSimilarity(aegeanInstance.getName(), candidateInstance.getLabel());
+		        	
+		        		if(similarity >= maxSimilarity){
+		        			bestMachingInstance = candidateInstance;
+		        			maxSimilarity = similarity;
+		        		}
+		        	}
+	        	}
+	        	  	
+	    		if(maxSimilarity < similarityThreshold) 
 	    			continue;
-	        	
-	        	// For each instance we set as sameAs instance, the candidate instance that has similarity greater than 0.90
-	        	aegeanInstance.setSameAs(bestMachingInstance.getURI());
+		        
+	    		// For each instance we set as sameAs instance, the candidate instance that has similarity greater than 0.90
+		        aegeanInstance.setSameAs(bestMachingInstance.getURI());
 	        	
 	        	// Create the resources
 	        	Resource newResource = model.createResource(aegeanInstance.getURI());
@@ -604,7 +600,7 @@ public class Start {
 		ArrayList <CandidateInstance> candidateInstances = new ArrayList<>();
 		
 		int distanceThreshold = 30000; // threshold in meters
-		double similarityThreshold = 0.7;
+		double similarityThreshold = 0.4;
 		double classSimilarityThreshold = 0.40;
 		int counter = 0;
 		// Create an empty Model
